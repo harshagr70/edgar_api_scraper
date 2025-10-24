@@ -1,0 +1,20 @@
+# Core Streamlit App
+streamlit==1.50.0
+
+# Data Processing
+pandas==2.3.2
+numpy==2.2.6
+
+# SEC Edgar API & Web Scraping
+requests==2.32.5
+beautifulsoup4==4.13.5
+lxml==5.4.0
+
+# Excel Export
+openpyxl==3.1.5
+
+# Optional: LLM Section Consolidation (currently disabled)
+# Uncomment if you re-enable LLM in financial_merger_helper.py
+# openai==1.59.8
+# pydantic==2.11.7
+# pydantic_core==2.33.2
