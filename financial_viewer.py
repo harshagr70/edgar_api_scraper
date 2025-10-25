@@ -127,10 +127,11 @@ def format_statement(statement_dict, statement_name):
             for year in years_sorted:
                 value = item.get("values", {}).get(year, 0)
                 # Format: show "-" for 0, otherwise format with commas
-                if value == 0:
-                    row[year] = "-"
-                else:
-                    row[year] = f"{value:,.2f}" if abs(value) < 1 else f"{value:,.0f}"
+                
+            if value is None or value == 0:
+                row[year] = "-"
+            else:
+                row[year] = f"{value:,.2f}" if abs(value) < 1 else f"{value:,.0f}"
             all_rows.append(row)
     
     # Create DataFrame
