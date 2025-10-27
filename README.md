@@ -1,63 +1,49 @@
----
-title: "📊 Edgar Financial Statement Analyzer"
-output: html_document
----
+# Edgar Financial Statement Analyzer
 
-## 🧠 What is this?
-A Python tool that automatically downloads and normalizes **multi-year financial statements** from **SEC Edgar**, solving the problem of inconsistent line-item labels across years.
+A Python tool that fetches multi-year financial statements from SEC EDGAR, normalizes inconsistent line-item labels across years, and provides a unified API for financial data analysis.
 
----
+## Quick Start
 
-## 🚨 The Problem
-Companies often change how they label items between years:
+```bash
+# Setup secrets
+cp .secrets.example .secrets
+chmod 600 .secrets
 
-| Year | Label Example |
-|------|----------------|
-| 1 | Research & Development |
-| 2 | R&D |
-| 3 | R&D Expenses |
+# Run with Docker
+docker-compose up -d
 
-These all refer to the *same* item but appear as separate rows when merged naively.
+# Or run locally
+pip install -r requirements.txt
+python api_server.py
+```
 
----
+## Documentation Files
 
-## 💡 The Solution
-This tool intelligently matches items across years using:
+| File | Purpose | When to Use |
+|------|---------|-------------|
+| **QUICK_START.md** | Setup and testing guide | Getting started locally or with Docker |
+| **pipeline_detail.md** | Complete API documentation with JSON structure | Integrating with frontend or building clients |
+| **DEPLOYMENT.md** | Production deployment options (AWS, GCP, Azure) | Deploying to cloud environments |
+| **README_API.md** | Quick API overview and endpoints | Quick reference for API usage |
 
-- **GAAP codes** (official accounting standard identifiers)  
-- **Label matching** (normalized text comparison)  
-- **Value matching** (if values match, they’re likely the same item)  
-- **AI matching** (GPT-4 detects semantic equivalence)
+## What This Does
 
----
+- Fetches financial data from SEC Edgar API
+- Merges multi-year statements with consistent line items
+- Provides FastAPI endpoints for programmatic access
+- Includes Streamlit UI for interactive analysis
 
-## 🎁 What You Get
+## Key Features
 
-**Input:**  
-- Ticker symbol (e.g., `AAPL`)  
-- Number of years to analyze  
+- **Normalization**: Handles inconsistent label names across years
+- **GAAP Alignment**: Uses official accounting codes for matching
+- **Multi-year Analysis**: Supports 3+ years of historical data
+- **Excel Export**: Clean formatted output for analysis
 
-**Output:**  
-- Unified financial statements with **aligned line items**
+## Architecture
 
-✅ Fetches data directly from **SEC Edgar API** — no manual downloads  
-✅ Merges 3 + years into a single, consistent view  
-✅ Interactive **Streamlit web UI**  
-✅ Excel export with clean formatting  
-
----
-
-## 💼 Use Cases
-
-| User | Purpose |
-|------|----------|
-| **Investors** | Quick multi-year performance analysis |
-| **Analysts** | Ready-to-use data for financial models |
-| **Researchers** | Structured data extraction for empirical work |
-
----
-
-## 🧾 Bottom Line
-Enter a **ticker symbol**, and get **perfectly aligned multi-year financial statements** in seconds —  
-no more manual PDF wrangling required!
+- **API Server**: `api_server.py` - FastAPI endpoints
+- **Helper Functions**: `helper/api_helper_functions.py` - Data fetching logic
+- **Data Merger**: `helper/financial_merger_helper.py` - Statement normalization
+- **Streamlit UI**: `financial_viewer.py` - Interactive web interface
 
