@@ -13,10 +13,9 @@ from bs4 import BeautifulSoup
 import logging  # make sure to add
 import calendar  # make sure to add
  # change to your own headers file or add variable in code
+USER_EMAIL = os.getenv("USER_EMAIL")
+headers = {"User-Agent": USER_EMAIL}
 
-
-
-headers = {"User-Agent": "harshagr838@gmail.com"}
 
 pd.options.display.float_format = (
     lambda x: "{:,.0f}".format(x) if int(x) == x else "{:,.2f}".format(x)
@@ -83,16 +82,27 @@ statement_keys_map = {
 ## for retrieveing the cik for the company 
 
 def cik_matching_ticker(ticker, headers=headers):
-    ticker = ticker.upper().replace(".", "-")
-    ticker_json = requests.get(
-        "https://www.sec.gov/files/company_tickers.json", headers=headers
-    ).json()
+    try:
+        ticker = ticker.upper().replace(".", "-")
+        response = requests.get(
+            "https://www.sec.gov/files/company_tickers.json", headers=headers, timeout=10
+        )
+        response.raise_for_status()
+        ticker_json = response.json()
 
-    for company in ticker_json.values():
-        if company["ticker"] == ticker:
-            cik = str(company["cik_str"]).zfill(10)
-            return cik
-    raise ValueError(f"Ticker {ticker} not found in SEC database")
+        for company in ticker_json.values():
+            if company["ticker"] == ticker:
+                cik = str(company["cik_str"]).zfill(10)
+                return cik
+        raise ValueError(f"Ticker {ticker} not found in SEC database")
+    except requests.RequestException as e:
+        logging.error(f"Network error fetching ticker data: {e}")
+        raise ConnectionError(f"Could not connect to SEC database. Please check your internet connection.")
+    except ValueError:
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error in cik_matching_ticker: {e}")
+        raise ValueError(f"Error processing ticker {ticker}: {str(e)}")
 
 
 ####################################################################################################
@@ -108,14 +118,26 @@ def get_submission_data_for_ticker(ticker, headers=headers, only_filings_df=Fals
     Returns:
         json: The submissions for the company.
     """
-    cik = cik_matching_ticker(ticker)
-    headers = headers
-    url = f"https://data.sec.gov/submissions/CIK{cik}.json"
-    company_json = requests.get(url, headers=headers).json()
-    if only_filings_df:
-        return pd.DataFrame(company_json["filings"]["recent"])
-    else:
-        return company_json 
+    try:
+        cik = cik_matching_ticker(ticker)
+        headers = headers
+        url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        company_json = response.json()
+        if only_filings_df:
+            return pd.DataFrame(company_json["filings"]["recent"])
+        else:
+            return company_json
+    except requests.RequestException as e:
+        logging.error(f"Error fetching submission data for {ticker}: {e}")
+        raise ConnectionError(f"Could not fetch company data from SEC. Please try again later.")
+    except (KeyError, TypeError) as e:
+        logging.error(f"Error parsing submission data for {ticker}: {e}")
+        raise ValueError(f"Invalid data structure received from SEC for {ticker}")
+    except Exception as e:
+        logging.error(f"Unexpected error in get_submission_data_for_ticker: {e}")
+        raise ValueError(f"Error processing submission data for {ticker}: {str(e)}") 
 
 ####################################################################################################
 # This will give back the accn number , and the number of filings present in the company
@@ -135,19 +157,34 @@ def get_filtered_filings(
     Returns:
         DataFrame or Series: DataFrame of filings or Series of accession numbers.
     """
-    # Fetch submission data for the given ticker
-    company_filings_df = get_submission_data_for_ticker(
-        ticker, only_filings_df=True, headers=headers
-    )
-    # Filter for 10-K or 10-Q forms
-    df = company_filings_df[company_filings_df["form"] == ("10-K" if ten_k else "10-Q")]
-    # Return accession numbers if specified
-    if just_accession_numbers:
-        df = df.set_index("reportDate")
-        accession_df = df["accessionNumber"]
-        return accession_df
-    else:
-        return df
+    try:
+        # Fetch submission data for the given ticker
+        company_filings_df = get_submission_data_for_ticker(
+            ticker, only_filings_df=True, headers=headers
+        )
+        
+        if company_filings_df is None or company_filings_df.empty:
+            logging.warning(f"No filings data received for {ticker}")
+            return pd.DataFrame()  # Return empty DataFrame instead of None
+        
+        # Filter for 10-K or 10-Q forms
+        form_type = "10-K" if ten_k else "10-Q"
+        df = company_filings_df[company_filings_df["form"] == form_type]
+        
+        if df.empty:
+            logging.warning(f"No {form_type} filings found for {ticker}")
+            return pd.DataFrame()
+        
+        # Return accession numbers if specified
+        if just_accession_numbers:
+            df = df.set_index("reportDate")
+            accession_df = df["accessionNumber"]
+            return accession_df
+        else:
+            return df
+    except Exception as e:
+        logging.error(f"Error in get_filtered_filings for {ticker}: {e}")
+        raise ValueError(f"Error retrieving filings for {ticker}: {str(e)}")
     
 ####################################################################################################
 # this gets all the 
@@ -169,9 +206,10 @@ def get_statement_file_names_in_filing_summary(ticker, accession_number, headers
         cik = cik_matching_ticker(ticker)
         base_link = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_number}"
         filing_summary_link = f"{base_link}/FilingSummary.xml"
-        filing_summary_response = session.get(
-            filing_summary_link, headers=headers
-        ).content.decode("utf-8")
+        
+        response = session.get(filing_summary_link, headers=headers, timeout=10)
+        response.raise_for_status()
+        filing_summary_response = response.content.decode("utf-8")
 
         # Parse the filing summary
         filing_summary_soup = BeautifulSoup(filing_summary_response, "lxml-xml")
@@ -184,7 +222,10 @@ def get_statement_file_names_in_filing_summary(ticker, accession_number, headers
                 statement_file_names_dict[short_name.text.lower()] = file_name
         return statement_file_names_dict 
     except requests.RequestException as e:
-        print(f"An error occurred: {e}")
+        logging.error(f"Network error fetching filing summary for {ticker}/{accession_number}: {e}")
+        return {}
+    except Exception as e:
+        logging.error(f"Error parsing filing summary for {ticker}/{accession_number}: {e}")
         return {}
 ##
 ## helper function
@@ -253,23 +294,33 @@ def get_statement_soup(
     Raises:
         ValueError: If the statement file name is not found or if there is an error fetching the statement.
     """
-    session = requests.Session()
-    cik = cik_matching_ticker(ticker)
-    base_link = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_number}"
-    # Get statement file names
-    statement_file_name_dict = get_statement_file_names_in_filing_summary(
-        ticker, accession_number, headers
-    )
-    statement_link = None
-    # Find the specific statement link
-    for possible_key in statement_keys_map.get(statement_name.lower(), []):
-        file_name = statement_file_name_dict.get(possible_key.lower())
-        if file_name:
-            statement_link = f"{base_link}/{file_name}"
-            return statement_link
+    try:
+        session = requests.Session()
+        cik = cik_matching_ticker(ticker)
+        base_link = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_number}"
+        # Get statement file names
+        statement_file_name_dict = get_statement_file_names_in_filing_summary(
+            ticker, accession_number, headers
+        )
         
-    if not statement_link:
-        raise ValueError(f"Could not find statement file name for {statement_name}")
+        if not statement_file_name_dict:
+            raise ValueError(f"Could not fetch filing summary for {ticker}/{accession_number}")
+        
+        statement_link = None
+        # Find the specific statement link
+        for possible_key in statement_keys_map.get(statement_name.lower(), []):
+            file_name = statement_file_name_dict.get(possible_key.lower())
+            if file_name:
+                statement_link = f"{base_link}/{file_name}"
+                return statement_link
+        
+        if not statement_link:
+            raise ValueError(f"Could not find statement file name for {statement_name}")
+    except ValueError:
+        raise
+    except Exception as e:
+        logging.error(f"Error in get_statement_soup for {ticker}/{accession_number}/{statement_name}: {e}")
+        raise ValueError(f"Could not retrieve statement link: {str(e)}")
 
 
 
@@ -322,92 +373,122 @@ def clean_value(txt: str):
 
 def parse_sec_statement(ticker, statement_name, year, user_agent: str = "harshagr838@gmail.com", header= headers):
 
-    """Parse SEC R*.htm financial statement into structured JSON-like rows."""
-    accn = get_filtered_filings(
-        ticker, ten_k=True, just_accession_numbers=False, headers=header
-    )
-    acc_num = accn['accessionNumber'].iloc[year].replace("-", "")
-    url = get_statement_soup(
-            ticker,
-            accession_number=acc_num,
-            statement_name=statement_name,
-            headers=header,
-            statement_keys_map=statement_keys_map
+    """Parse SEC R*.htm financial statement into structured JSON-like rows.
+    
+    Returns:
+        dict: {"rows": [...], "source_url": url} or just rows list for backward compatibility
+    """
+    source_url = None  # Track the URL
+    try:
+        accn = get_filtered_filings(
+            ticker, ten_k=True, just_accession_numbers=False, headers=header
+        )
+        
+        if accn is None or accn.empty:
+            raise ValueError(f"No filings found for {ticker}")
+        
+        if year >= len(accn):
+            raise ValueError(f"Year index {year} is out of range for {ticker} (available: {len(accn)} filings)")
+        
+        acc_num = accn['accessionNumber'].iloc[year].replace("-", "")
+        url = get_statement_soup(
+                ticker,
+                accession_number=acc_num,
+                statement_name=statement_name,
+                headers=header,
+                statement_keys_map=statement_keys_map
+        )
+        source_url = url  # Store the URL
 
-    )
+        # check for the URL : 
+        logging.debug(f"Parsing URL: {url}")
 
+        resp = requests.get(url, headers={"User-Agent": user_agent}, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.content, "html.parser")
+    except (IndexError, KeyError) as e:
+        logging.error(f"Index error in parse_sec_statement for {ticker}, year {year}: {e}")
+        raise ValueError(f"Invalid data structure for {ticker}, year {year}")
+    except requests.RequestException as e:
+        logging.error(f"Network error in parse_sec_statement for {ticker}, year {year}: {e}")
+        raise ConnectionError(f"Could not fetch financial statement from SEC. Please try again.")
+    except Exception as e:
+        logging.error(f"Error in parse_sec_statement for {ticker}, year {year}: {e}")
+        raise ValueError(f"Error parsing financial statement: {str(e)}")
 
-    ## check for the URL : 
-    print(url)
+    # Continue with parsing logic, but wrapped in error handling
+    try:
+        # ---- 1. Extract column headers (dates/periods) ----
+        headers_list = [th.get_text(" ", strip=True) for th in soup.select("th")]
+        periods = [h for h in headers_list if re.search(r"\d{4}", h)]
+        if not periods:  # fallback: use all headers if no clean match
+            periods = headers_list
 
-    resp = requests.get(url, headers={"User-Agent": user_agent})
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.content, "html.parser")
+        rows = []
+        for tr in soup.select("tr"):
+            label_cell = tr.select_one("td.pl, td.pl.custom")
+            if not label_cell:
+                continue
 
-    # ---- 1. Extract column headers (dates/periods) ----
-    headers = [th.get_text(" ", strip=True) for th in soup.select("th")]
-    periods = [h for h in headers if re.search(r"\d{4}", h)]
-    if not periods:  # fallback: use all headers if no clean match
-        periods = headers
+            link = label_cell.select_one("a")
+            label = None
+            gaap_code = None  # ✅ default
 
-    rows = []
-    for tr in soup.select("tr"):
-        label_cell = tr.select_one("td.pl, td.pl.custom")
-        if not label_cell:
-            continue
+            if link:
+                label = link.get_text(" ", strip=True)
 
-        link = label_cell.select_one("a")
-        label = None
-        gaap_code = None  # ✅ default
+                onclick_val = link.get("onclick", "")
+                match = re.search(r"defref_([a-zA-Z0-9\-_]+)", onclick_val)
+                gaap_code = match.group(1) if match else None
 
-        if link:
-            label = link.get_text(" ", strip=True)
+                is_section = False
+                if gaap_code:
+                    g = gaap_code.lower()
+                    if g.endswith("abstract") or g.endswith("axis") or g.endswith("member"):
+                        is_section = True
 
-            onclick_val = link.get("onclick", "")
-            match = re.search(r"defref_([a-zA-Z0-9\-_]+)", onclick_val)
-            gaap_code = match.group(1) if match else None
+                # Fallback: no numeric values in row
+                if not is_section:
+                    numeric_vals = [
+                        clean_value(td.get_text(" ", strip=True))
+                        for td in tr.select("td.nump, td.num, td.text")
+                    ]
+                    if not any(v not in [None, "", "-"] for v in numeric_vals):
+                        is_section = True
+            else:
+                label = label_cell.get_text(" ", strip=True)
+                is_section = False
 
-            is_section = False
-            if gaap_code:
-                g = gaap_code.lower()
-                if g.endswith("abstract") or g.endswith("axis") or g.endswith("member"):
-                    is_section = True
+            if not label:
+                continue
 
-            # Fallback: no numeric values in row
-            if not is_section:
-                numeric_vals = [
-                    clean_value(td.get_text(" ", strip=True))
-                    for td in tr.select("td.nump, td.num, td.text")
-                ]
-                if not any(v not in [None, "", "-"] for v in numeric_vals):
-                    is_section = True
-        else:
-            label = label_cell.get_text(" ", strip=True)
-            is_section = False
+            # ---- 3. Extract values ----
+            values = []
+            for td in tr.select("td.nump, td.num, td.text"):
+                val = clean_value(td.get_text(" ", strip=True))
+                values.append(val)
 
-        if not label:
-            continue
+            # ---- 4. Build row dict ----
+            row_dict = {
+                "label": label,
+                "gaap": gaap_code,
+                "is_section": is_section  # ✅ Add this
+            }
 
-        # ---- 3. Extract values ----
-        values = []
-        for td in tr.select("td.nump, td.num, td.text"):
-            val = clean_value(td.get_text(" ", strip=True))
-            values.append(val)
+            for i, v in enumerate(values):
+                if i < len(periods):
+                    row_dict[periods[i]] = v
 
-        # ---- 4. Build row dict ----
-        row_dict = {
-            "label": label,
-            "gaap": gaap_code,
-            "is_section": is_section  # ✅ Add this
-        }
+            rows.append(row_dict)
 
-        for i, v in enumerate(values):
-            if i < len(periods):
-                row_dict[periods[i]] = v
-
-        rows.append(row_dict)
-
-    return rows
+        # Return dict with rows and source URL
+        return {"rows": rows, "source_url": source_url}
+    except (AttributeError, KeyError, TypeError) as e:
+        logging.error(f"Error parsing HTML structure for {ticker}, year {year}, statement {statement_name}: {e}")
+        raise ValueError(f"Could not parse financial statement HTML. The filing structure may be unusual.")
+    except Exception as e:
+        logging.error(f"Unexpected error parsing statement for {ticker}, year {year}, statement {statement_name}: {e}")
+        raise ValueError(f"Error extracting data from financial statement: {str(e)}")
 
 
 
@@ -419,63 +500,71 @@ def structure_statement_json(flat_rows, statement_name):
     Convert flat list of row dicts into a nested JSON grouped by sections.
     Uses the 'is_section' flag to preserve hierarchy accurately.
     """
-    if not flat_rows:
-        return {"statement": statement_name, "sections": [], "periods": []}
+    try:
+        if not flat_rows:
+            return {"statement": statement_name, "sections": [], "periods": []}
 
-    # ✅ Detect only actual periods (exclude label, is_section, gaap)
-    sample_row = flat_rows[0]
-    periods = [
-        k for k in sample_row.keys()
-        if k not in ("label", "gaap", "is_section")
-    ]
+        # ✅ Detect only actual periods (exclude label, is_section, gaap)
+        sample_row = flat_rows[0]
+        periods = [
+            k for k in sample_row.keys()
+            if k not in ("label", "gaap", "is_section")
+        ]
 
-    structured = {
-        "statement": statement_name,
-        "periods": periods,
-        "sections": []
-    }
-
-    current_section = None
-
-    for row in flat_rows:
-        label = row.get("label", "").strip()
-        gaap_code = row.get("gaap")
-        is_section = row.get("is_section", False)
-
-        # ✅ Extract only real values (exclude gaap & is_section)
-        values = {
-            p: (None if row.get(p) in ("", None, "-", "—") else row[p])
-            for p in periods
+        structured = {
+            "statement": statement_name,
+            "periods": periods,
+            "sections": []
         }
 
-        # ✅ If it's a SECTION row
-        if is_section:
-            current_section = {
-                "section": label,
-                "gaap": gaap_code,
-                "items": []
-            }
-            structured["sections"].append(current_section)
+        current_section = None
 
-        else:
-            # ✅ It's a line item
-            item_entry = {
-                "label": label,
-                "gaap": gaap_code,
-                "values": values
-            }
+        for row in flat_rows:
+            try:
+                label = row.get("label", "").strip()
+                gaap_code = row.get("gaap")
+                is_section = row.get("is_section", False)
 
-            # ✅ If no section has appeared yet → place in Uncategorized
-            if current_section is None:
-                current_section = {
-                    "section": "Uncategorized",
-                    "items": []
+                # ✅ Extract only real values (exclude gaap & is_section)
+                values = {
+                    p: (None if row.get(p) in ("", None, "-", "—") else row[p])
+                    for p in periods
                 }
-                structured["sections"].append(current_section)
 
-            current_section["items"].append(item_entry)
+                # ✅ If it's a SECTION row
+                if is_section:
+                    current_section = {
+                        "section": label,
+                        "gaap": gaap_code,
+                        "items": []
+                    }
+                    structured["sections"].append(current_section)
 
-    return structured
+                else:
+                    # ✅ It's a line item
+                    item_entry = {
+                        "label": label,
+                        "gaap": gaap_code,
+                        "values": values
+                    }
+
+                    # ✅ If no section has appeared yet → place in Uncategorized
+                    if current_section is None:
+                        current_section = {
+                            "section": "Uncategorized",
+                            "items": []
+                        }
+                        structured["sections"].append(current_section)
+
+                    current_section["items"].append(item_entry)
+            except (KeyError, TypeError) as e:
+                logging.warning(f"Error processing row in structure_statement_json: {e}")
+                continue
+
+        return structured
+    except Exception as e:
+        logging.error(f"Error in structure_statement_json for {statement_name}: {e}")
+        return {"statement": statement_name, "sections": [], "periods": [], "error": str(e)}
 
 
 ## function for multiple statement calls 
@@ -650,17 +739,45 @@ def _process_single_statement_task(
         tuple: (report_date, statement_name, json_struct or error dict)
     """
     try:
-        flat_rows = parse_sec_statement(
+        parse_result = parse_sec_statement(
             ticker=ticker,
             statement_name=statement_name,
             year=year_index,
             user_agent=user_agent,
             header=header
         )
+        
+        # Handle new dict format or legacy list format
+        if isinstance(parse_result, dict):
+            flat_rows = parse_result.get("rows", [])
+            source_url = parse_result.get("source_url")
+        else:
+            flat_rows = parse_result
+            source_url = None
+        
+        if not flat_rows:
+            logging.warning(f"No rows extracted from {statement_name} for {ticker} at {report_date}")
+            return report_date, statement_name, {"error": "No data extracted from statement"}
+        
         json_struct = structure_statement_json(flat_rows, statement_name)
+        
+        if not json_struct or not json_struct.get("sections"):
+            logging.warning(f"Empty structured data for {statement_name} for {ticker} at {report_date}")
+            return report_date, statement_name, {"error": "Could not structure statement data"}
+        
+        # Add source URL to the structured data
+        if source_url:
+            json_struct["source_url"] = source_url
+        
         return report_date, statement_name, json_struct
+    except ValueError as e:
+        logging.error(f"Value error processing {statement_name} for {ticker} at {report_date}: {e}")
+        return report_date, statement_name, {"error": str(e)}
+    except ConnectionError as e:
+        logging.error(f"Connection error processing {statement_name} for {ticker} at {report_date}: {e}")
+        return report_date, statement_name, {"error": str(e)}
     except Exception as e:
-        logging.error(f"Error processing {statement_name} for {ticker} at {report_date}: {e}")
+        logging.error(f"Unexpected error processing {statement_name} for {ticker} at {report_date}: {e}")
         return report_date, statement_name, {"error": str(e)}
 
 

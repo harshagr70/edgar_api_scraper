@@ -1,5 +1,6 @@
 from collections import defaultdict, OrderedDict
 import re
+import logging
 from difflib import SequenceMatcher
 # LLM import disabled
 # from helper.section_match_fallback_llm import apply_global_llm_section_consolidation
@@ -88,11 +89,12 @@ def _pad_missing_years_in_mapping(mapping, target_years):
     """
     For each payload in the (unified/ordered) mapping, ensure every target_year exists.
     Missing years are inserted with 0.0 (not None).
+    Also converts any existing None values to 0.0.
     """
     for payload in mapping.values():
         vals = payload.setdefault("values", {})
         for y in target_years:
-            if y not in vals:
+            if y not in vals or vals[y] is None:
                 vals[y] = 0.0
 
 # ---------- ordering-only helpers (no heuristics) ----------
@@ -772,24 +774,32 @@ def build_unified_catalog(years_json, statement_type):
                     itm_key = (normalize_label(row["item_label"]) if ignore_gaap
                                else (row.get("item_gaap") or normalize_label(row["item_label"])))
                     key = f"{itm_key}|{sec}"
+                    
+                    # Clean values to ensure no None values
+                    cleaned_values = {}
+                    for k, v in row["values"].items():
+                        cleaned_values[k] = v if v is not None else 0.0
+                    
                     unified[key] = {
                         "section_gaap": row["section_gaap"],
                         "section_label": row["section_label"],
                         "item_gaap": row["item_gaap"],
                         "item_label": row["item_label"],
-                        "values": dict(row["values"])
+                        "values": cleaned_values
                     }
 
 
                 if matched_key and not matched_key.startswith("review_needed"):
                     for y, v in row["values"].items():
+                        # Clean the value to ensure no None
+                        clean_v = v if v is not None else 0.0
                         # If this period hasn't been set yet, take it
                         if y not in unified[matched_key]["values"]:
-                            unified[matched_key]["values"][y] = v
+                            unified[matched_key]["values"][y] = clean_v
                         else:
                             # Otherwise, keep the value from the newer filing (later year in years_sorted)
                             if int(normalize_year_key(yr[:4])) > int(normalize_year_key(list(unified[matched_key]["values"].keys())[0])):
-                                unified[matched_key]["values"][y] = v
+                                unified[matched_key]["values"][y] = clean_v
 
                 elif not matched_key:
                     # Build safe key (identical to your original)
@@ -798,12 +808,18 @@ def build_unified_catalog(years_json, statement_type):
                         if ignore_gaap else (row.get("item_gaap") or normalize_label(row["item_label"]))
                     )
                     key = f"{itm_key}|{sec}"
+                    
+                    # Clean values to ensure no None values
+                    cleaned_values = {}
+                    for k, v in row["values"].items():
+                        cleaned_values[k] = v if v is not None else 0.0
+                    
                     unified[key] = {
                         "section_gaap": row["section_gaap"],
                         "section_label": row["section_label"],
                         "item_gaap": row["item_gaap"],
                         "item_label": row["item_label"],
-                        "values": dict(row["values"])
+                        "values": cleaned_values
                     }
 
 
@@ -947,25 +963,63 @@ def build_unified_catalog_all_statements(years_json):
             "cash_flow_statement": OrderedDict(...)
         }
     """
-    # Extract just the years data
-    years_data = years_json.get("years", {})
-    
-    # Statement types to process
-    statement_types = ["income_statement", "balance_sheet", "cash_flow_statement"]
-    
-    results = {}
-    
-    for stmt_type in statement_types:
-        # Build a statement-specific years dictionary
-        stmt_years = {}
-        for year_key, year_data in years_data.items():
-            if stmt_type in year_data:
-                stmt_years[year_key] = {stmt_type: year_data[stmt_type]}
+    try:
+        # Extract just the years data
+        years_data = years_json.get("years", {})
         
-        # Only process if we have data for this statement
-        if stmt_years:
-            results[stmt_type] = build_unified_catalog(stmt_years, stmt_type)
-        else:
-            results[stmt_type] = OrderedDict()
-    
-    return results
+        if not years_data:
+            logging.warning("No years data found in years_json")
+            return {
+                "income_statement": OrderedDict(),
+                "balance_sheet": OrderedDict(),
+                "cash_flow_statement": OrderedDict()
+            }
+        
+        # Statement types to process
+        statement_types = ["income_statement", "balance_sheet", "cash_flow_statement"]
+        
+        results = {}
+        
+        for stmt_type in statement_types:
+            try:
+                # Build a statement-specific years dictionary
+                stmt_years = {}
+                source_urls = []  # Track source URLs
+                
+                for year_key, year_data in years_data.items():
+                    if stmt_type in year_data:
+                        # Check if the statement data has an error
+                        if isinstance(year_data[stmt_type], dict) and 'error' in year_data[stmt_type]:
+                            logging.warning(f"Skipping {stmt_type} for {year_key} due to error: {year_data[stmt_type]['error']}")
+                            continue
+                        
+                        # Extract source URL if available
+                        if isinstance(year_data[stmt_type], dict) and 'source_url' in year_data[stmt_type]:
+                            source_url = year_data[stmt_type]['source_url']
+                            if source_url and source_url not in source_urls:
+                                source_urls.append(source_url)
+                        
+                        stmt_years[year_key] = {stmt_type: year_data[stmt_type]}
+            
+                # Only process if we have data for this statement
+                if stmt_years:
+                    unified_result = build_unified_catalog(stmt_years, stmt_type)
+                    # Store source URLs list in the results dict so it can be accessed
+                    results[stmt_type] = unified_result
+                    # Return all URLs (one for each year)
+                    results[stmt_type + "_url"] = source_urls if source_urls else []
+                else:
+                    results[stmt_type] = OrderedDict()
+                    results[stmt_type + "_url"] = []
+            except Exception as e:
+                logging.error(f"Error processing {stmt_type}: {e}")
+                results[stmt_type] = OrderedDict()
+        
+        return results
+    except Exception as e:
+        logging.error(f"Critical error in build_unified_catalog_all_statements: {e}")
+        return {
+            "income_statement": OrderedDict(),
+            "balance_sheet": OrderedDict(),
+            "cash_flow_statement": OrderedDict()
+        }
