@@ -14,7 +14,7 @@ import logging  # make sure to add
 import calendar  # make sure to add
  # change to your own headers file or add variable in code
 USER_EMAIL = os.getenv("USER_EMAIL")
-headers = {"User-Agent": USER_EMAIL}
+headers = {"User-Agent": "harshagr838@gmail.com}   ## currently using for deployed app
 
 
 pd.options.display.float_format = (
